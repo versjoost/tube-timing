@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -117,6 +118,11 @@ def cmd_now(
         return 2
 
     debug_data: Optional[dict[str, Any]] = {} if debug_path else None
+    if debug_data is not None:
+        print(
+            "Warning: debug output may include sensitive data; app_key will be redacted.",
+            file=sys.stderr,
+        )
 
     matches = search_stop_points(client, station, modes=[mode])
     if not matches:
@@ -225,7 +231,8 @@ def cmd_now(
     if debug_data is not None:
         debug_data["timetable_errors"] = timetable_errors
         debug_data["combined_count"] = len(combined)
-        Path(debug_path).write_text(json.dumps(debug_data, indent=2))
+        redacted = redact_debug_data(debug_data, client.api_key)
+        Path(debug_path).write_text(json.dumps(redacted, indent=2))
 
     direction_label = f", direction: {normalized_direction}" if normalized_direction else ""
     print(f"Expected departures at {station_name} (next {window}{direction_label}):")
@@ -431,6 +438,20 @@ def _print_directions(arrivals: List[dict[str, Any]]) -> None:
         if direction not in {"inbound", "outbound"}:
             continue
         print(direction)
+
+
+def redact_debug_data(value: Any, api_key: str) -> Any:
+    if isinstance(value, dict):
+        return {key: redact_debug_data(val, api_key) for key, val in value.items()}
+    if isinstance(value, list):
+        return [redact_debug_data(item, api_key) for item in value]
+    if isinstance(value, str):
+        redacted = value
+        if api_key:
+            redacted = redacted.replace(api_key, "REDACTED")
+        redacted = re.sub(r"(app_key=)([^&\s]+)", r"\1REDACTED", redacted)
+        return redacted
+    return value
 
 
 if __name__ == "__main__":
