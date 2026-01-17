@@ -1,13 +1,15 @@
 # tube-timing
 
-A CLI to quickly see the next departures from your Tube station — combining TfL live arrivals with longer-range timetables.
+A CLI to quickly see the next departures from your Tube station, combining TfL live arrivals with longer-range timetables.
+
+Requirements: Python 3.9+
 
 ## Quickstart
 
 - Required: `TFL_API_KEY`
 - Optional: `TFL_APP_ID`
 - Quote station names with spaces (e.g., "Regent's Park")
-- Use your preferred environment (venv/conda/pyenv); commands assume it is active.
+- Get an API key from the TfL API portal: https://api.tfl.gov.uk
 
 ```sh
 export TFL_API_KEY=your_key_here
@@ -17,10 +19,6 @@ python3 -m pip install .
 
 tube-timing now "Regent's Park" 10m
 ```
-
-### Requirements
-
-- Python 3.9+
 
 ## Usage
 
@@ -51,7 +49,7 @@ Station matching:
 
 ### Filtering behaviour
 
-- `--direction` accepts inbound/outbound or compass directions.
+- `--direction` accepts inbound/outbound or compass directions like northbound.
 - Compass directions require a single `--line` so direction can be inferred for that line.
 - `--towards` matches the final destination in live arrivals and intermediate stops in timetables when available.
 
