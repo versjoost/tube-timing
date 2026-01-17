@@ -6,7 +6,7 @@ Requirements: Python 3.9+
 
 ## Quickstart
 
-- Env: TFL_API_KEY required (TFL_APP_ID optional)
+- TfL API key required (API ID optional)
 - Get an API key from the TfL API portal: https://api.tfl.gov.uk
 
 ```sh
