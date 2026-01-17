@@ -19,6 +19,7 @@ from .api import (
 from .departures import (
     arrivals_to_departures,
     compact_destination,
+    Departure,
     format_departure,
     london_tz,
     merge_departures,
@@ -355,10 +356,11 @@ def cmd_now(
 
     combined = merge_departures(live_departures, timetable_departures)
     if towards:
-        needle = normalize_name(towards)
+        needles = build_towards_needles(towards)
         combined = [
-            item for item in combined if needle in normalize_name(item.destination)
+            item for item in combined if departure_matches_towards(item, needles)
         ]
+    combined = order_departures(combined)
     if debug_data is not None:
         debug_data["timetable_errors"] = timetable_errors
         debug_data["combined_count"] = len(combined)
@@ -682,6 +684,43 @@ def normalize_direction(value: Optional[str]) -> Optional[str]:
     if text in {"inbound", "outbound", "northbound", "southbound", "eastbound", "westbound"}:
         return text
     return None
+
+
+def build_towards_needles(value: str) -> set[str]:
+    needles: set[str] = set()
+    base = normalize_name(value)
+    if base:
+        needles.add(base)
+    text = re.sub(r"\bpower station\b", "", value, flags=re.IGNORECASE)
+    alt = normalize_name(text)
+    if alt:
+        needles.add(alt)
+    return needles
+
+
+def departure_matches_towards(departure: Departure, needles: set[str]) -> bool:
+    if not needles:
+        return True
+    dest_norm = normalize_name(departure.destination)
+    if any(needle in dest_norm for needle in needles):
+        return True
+    if departure.stops:
+        for stop_name in departure.stops:
+            stop_norm = normalize_name(stop_name)
+            if any(needle in stop_norm for needle in needles):
+                return True
+    return False
+
+
+def order_departures(departures: List[Departure]) -> List[Departure]:
+    live = [item for item in departures if item.source == "live"]
+    scheduled = [item for item in departures if item.source != "live"]
+    if live:
+        latest_live = max(item.when for item in live)
+        scheduled = [item for item in scheduled if item.when >= latest_live]
+    return sorted(live, key=lambda item: item.when) + sorted(
+        scheduled, key=lambda item: item.when
+    )
 
 
 def filter_arrivals_by_line(

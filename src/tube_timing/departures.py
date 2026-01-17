@@ -2,7 +2,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional
 
 try:
     from zoneinfo import ZoneInfo
@@ -23,6 +23,7 @@ class Departure:
     destination: str
     source: str
     line: Optional[str] = None
+    stops: Optional[FrozenSet[str]] = None
 
 
 def london_tz() -> timezone:
@@ -328,6 +329,10 @@ def _parse_route(
         or "Unknown"
     )
     interval_destinations = _build_interval_destinations(route, stop_map or {})
+    interval_stops = _build_interval_stops(route, stop_map or {})
+    route_stops: Optional[set[str]] = None
+    if len(interval_stops) == 1:
+        route_stops = next(iter(interval_stops.values()))
     default_destination = destination
     if interval_destinations:
         default_destination = next(iter(interval_destinations.values()))
@@ -343,6 +348,7 @@ def _parse_route(
         known = _parse_known_journeys(
             schedule,
             interval_destinations,
+            interval_stops,
             default_destination,
             now,
             window_end,
@@ -361,6 +367,7 @@ def _parse_route(
                     now,
                     window_end,
                     tzinfo,
+                    route_stops,
                 )
             )
     return items
@@ -425,6 +432,32 @@ def _build_interval_destinations(
     return destinations
 
 
+def _build_interval_stops(
+    route: Dict[str, Any], stop_map: Dict[str, str]
+) -> Dict[str, set[str]]:
+    interval_stops: Dict[str, set[str]] = {}
+    intervals = route.get("stationIntervals")
+    if not isinstance(intervals, list):
+        return interval_stops
+    for interval in intervals:
+        if not isinstance(interval, dict):
+            continue
+        interval_id = interval.get("id")
+        if interval_id is None:
+            continue
+        stops = interval.get("intervals", [])
+        if not isinstance(stops, list) or not stops:
+            continue
+        stop_ids = [item.get("stopId") for item in stops if item.get("stopId")]
+        if not stop_ids:
+            continue
+        names = {
+            stop_map.get(str(stop_id), str(stop_id)) for stop_id in stop_ids
+        }
+        interval_stops[str(interval_id)] = names
+    return interval_stops
+
+
 def _detect_via(stop_ids: List[str]) -> Optional[str]:
     for label, ids in VIA_STOP_IDS.items():
         for stop_id in stop_ids:
@@ -436,6 +469,7 @@ def _detect_via(stop_ids: List[str]) -> Optional[str]:
 def _parse_known_journeys(
     schedule: Any,
     interval_destinations: Dict[str, str],
+    interval_stops: Dict[str, set[str]],
     default_destination: str,
     now: datetime,
     window_end: datetime,
@@ -458,9 +492,20 @@ def _parse_known_journeys(
             continue
         interval_id = journey.get("intervalId")
         destination = default_destination
+        stops: Optional[FrozenSet[str]] = None
         if interval_id is not None:
             destination = interval_destinations.get(str(interval_id), destination)
-        items.append(Departure(when=when, destination=destination, source="timetable"))
+            interval_stop_set = interval_stops.get(str(interval_id))
+            if interval_stop_set:
+                stops = frozenset(interval_stop_set)
+        items.append(
+            Departure(
+                when=when,
+                destination=destination,
+                source="timetable",
+                stops=stops,
+            )
+        )
     return items
 
 
@@ -471,6 +516,7 @@ def _parse_schedule_period(
     now: datetime,
     window_end: datetime,
     tzinfo: timezone,
+    stops: Optional[set[str]] = None,
 ) -> List[Departure]:
     if not isinstance(period, dict):
         return []
@@ -486,7 +532,12 @@ def _parse_schedule_period(
             when = when + timedelta(minutes=offset_minutes)
             if now <= when <= window_end:
                 items.append(
-                    Departure(when=when, destination=destination, source="timetable")
+                    Departure(
+                        when=when,
+                        destination=destination,
+                        source="timetable",
+                        stops=frozenset(stops) if stops else None,
+                    )
                 )
         return items
 
@@ -517,7 +568,12 @@ def _parse_schedule_period(
         when = current + offset_delta
         if now <= when <= window_end:
             items.append(
-                Departure(when=when, destination=destination, source="timetable")
+                Departure(
+                    when=when,
+                    destination=destination,
+                    source="timetable",
+                    stops=frozenset(stops) if stops else None,
+                )
             )
         current = current + timedelta(minutes=frequency_minutes)
     return items
@@ -567,7 +623,7 @@ def format_departure(departure: Departure, now: datetime) -> str:
     if departure.source == "live":
         seconds = (departure.when - now).total_seconds()
         if seconds <= 60:
-            return f"{destination}, due"
+            return f"{destination}, due LIVE"
         minutes = int(math.ceil(seconds / 60.0))
-        return f"{destination}, {minutes} min"
-    return f"To {destination} {departure.when.strftime('%H:%M')}"
+        return f"{destination}, {minutes} min LIVE"
+    return f"To {destination} {departure.when.strftime('%H:%M')} SCHEDULED"

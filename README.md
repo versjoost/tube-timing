@@ -42,6 +42,8 @@ tube-timing now "Waterloo" 60m --line jubilee --line northern
 ```
 
 When using a cardinal direction (northbound/southbound/etc), select a single line.
+The `--towards` filter matches both final destinations and intermediate stops when
+available from timetables.
 
 Multi-line stations:
 
