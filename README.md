@@ -43,7 +43,16 @@ tube-timing now "Waterloo" 60m --line jubilee --line northern
 
 When using a cardinal direction (northbound/southbound/etc), select a single line.
 The `--towards` filter matches both final destinations and intermediate stops when
-available from timetables.
+available from timetables. Common abbreviations are expanded (for example, "Charing
+Cross" also matches "CX"). To customize, set
+`TUBE_TIMING_TOWARDS_ALIASES="charing cross=cx,chx;saint=st"`.
+
+Output marks LIVE vs SCHEDULED in a consistent format:
+
+```
+High Barnet via CX, 19 min LIVE
+Battersea Power Station via Charing Cross 19:18 SCHEDULED
+```
 
 Multi-line stations:
 

@@ -24,6 +24,7 @@ class Departure:
     source: str
     line: Optional[str] = None
     stops: Optional[FrozenSet[str]] = None
+    direction: Optional[str] = None
 
 
 def london_tz() -> timezone:
@@ -172,6 +173,7 @@ def arrivals_to_departures(
                 destination=destination,
                 source="live",
                 line=item.get("lineName") or item.get("lineId"),
+                direction=item.get("direction"),
             )
         )
     return sorted(departures, key=lambda dep: dep.when)
@@ -626,4 +628,4 @@ def format_departure(departure: Departure, now: datetime) -> str:
             return f"{destination}, due LIVE"
         minutes = int(math.ceil(seconds / 60.0))
         return f"{destination}, {minutes} min LIVE"
-    return f"To {destination} {departure.when.strftime('%H:%M')} SCHEDULED"
+    return f"{destination} {departure.when.strftime('%H:%M')} SCHEDULED"
