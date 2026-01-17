@@ -622,10 +622,13 @@ def _similar_destination(left: str, right: str) -> bool:
 
 def format_departure(departure: Departure, now: datetime) -> str:
     destination = compact_destination(departure.destination)
-    if departure.source == "live":
-        seconds = (departure.when - now).total_seconds()
-        if seconds <= 60:
-            return f"{destination}, due LIVE"
+    when_label = departure.when.strftime("%H:%M")
+    seconds = (departure.when - now).total_seconds()
+    if seconds <= 60:
+        relative = "due"
+    else:
         minutes = int(math.ceil(seconds / 60.0))
-        return f"{destination}, {minutes} min LIVE"
-    return f"{destination} {departure.when.strftime('%H:%M')} SCHEDULED"
+        relative = f"in {minutes}m"
+    if departure.source == "live":
+        return f"{destination} {when_label} ({relative}) LIVE"
+    return f"{destination} {when_label} ({relative}) SCHEDULED"

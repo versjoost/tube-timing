@@ -357,8 +357,13 @@ def cmd_now(
     combined = merge_departures(live_departures, timetable_departures)
     if towards:
         needles = build_towards_needles(towards)
+        via_sensitive = is_via_direction_sensitive(towards)
         combined = [
-            item for item in combined if departure_matches_towards(item, needles)
+            item
+            for item in combined
+            if departure_matches_towards(
+                item, needles, normalized_direction, via_sensitive
+            )
         ]
     combined = order_departures(combined)
     if debug_data is not None:
@@ -373,7 +378,7 @@ def cmd_now(
         print("No departures found in this window.")
         return 0
     for departure in combined:
-        print(format_departure(departure, now))
+        print(format_departure_display(departure, now))
     return 0
 
 
@@ -686,22 +691,64 @@ def normalize_direction(value: Optional[str]) -> Optional[str]:
     return None
 
 
+TOWARDS_ENV_VAR = "TUBE_TIMING_TOWARDS_ALIASES"
+
+BASE_TOWARDS_ALIASES = {
+    "battersea power station": {"battersea"},
+    "charing cross": {"cx", "chx"},
+    "saint": {"st"},
+    "st": {"saint"},
+}
+
+VIA_DIRECTION_SENSITIVE = {"charing cross", "bank"}
+
+TOWARDS_DISPLAY_OVERRIDES = {
+    "battersea power station": "Battersea Power Station",
+    "charing cross": "Charing Cross",
+}
+
+
 def build_towards_needles(value: str) -> set[str]:
     needles: set[str] = set()
-    base = normalize_name(value)
+    aliases = get_towards_aliases()
+    base = normalize_name(re.sub(r"\bvia\b", "", value, flags=re.IGNORECASE))
     if base:
         needles.add(base)
     text = re.sub(r"\bpower station\b", "", value, flags=re.IGNORECASE)
     alt = normalize_name(text)
     if alt:
         needles.add(alt)
+    for needle in list(needles):
+        for key, alias_set in aliases.items():
+            if key in needle:
+                needles.update(alias_set)
     return needles
 
 
-def departure_matches_towards(departure: Departure, needles: set[str]) -> bool:
+def is_via_direction_sensitive(value: str) -> bool:
+    normalized = normalize_name(value)
+    if not normalized:
+        return False
+    aliases = get_towards_aliases()
+    sensitive_terms: set[str] = set()
+    for key in VIA_DIRECTION_SENSITIVE:
+        key_norm = normalize_name(key)
+        sensitive_terms.add(key_norm)
+        for alias in aliases.get(key_norm, set()):
+            sensitive_terms.add(alias)
+    return any(term in normalized for term in sensitive_terms)
+
+
+def departure_matches_towards(
+    departure: Departure,
+    needles: set[str],
+    direction_filter: Optional[str],
+    via_sensitive: bool,
+) -> bool:
     if not needles:
         return True
-    dest_norm = normalize_name(departure.destination)
+    destination, via = split_destination_via(departure.destination)
+    dest_norm = normalize_name(destination)
     if any(needle in dest_norm for needle in needles):
         return True
     if departure.stops:
@@ -709,6 +756,18 @@ def departure_matches_towards(departure: Departure, needles: set[str]) -> bool:
             stop_norm = normalize_name(stop_name)
             if any(needle in stop_norm for needle in needles):
                 return True
+    if via:
+        via_norm = normalize_name(via)
+        if any(needle in via_norm for needle in needles):
+            if direction_filter:
+                return True
+            if (
+                via_sensitive
+                and departure.source == "live"
+                and departure.direction == "outbound"
+            ):
+                return False
+            return True
     return False
 
 
@@ -716,11 +775,125 @@ def order_departures(departures: List[Departure]) -> List[Departure]:
     live = [item for item in departures if item.source == "live"]
     scheduled = [item for item in departures if item.source != "live"]
     if live:
-        latest_live = max(item.when for item in live)
-        scheduled = [item for item in scheduled if item.when >= latest_live]
+        latest_by_key: dict[str, datetime] = {}
+        live_times_by_key: dict[str, List[datetime]] = {}
+        for item in live:
+            key = dedupe_key_for_departure(item)
+            latest_by_key[key] = max(latest_by_key.get(key, item.when), item.when)
+            live_times_by_key.setdefault(key, []).append(item.when)
+        filtered = []
+        for item in scheduled:
+            key = dedupe_key_for_departure(item)
+            live_times = live_times_by_key.get(key, [])
+            if any(abs((item.when - live_time).total_seconds()) <= 90 for live_time in live_times):
+                continue
+            latest = latest_by_key.get(key)
+            if latest and item.when < latest:
+                continue
+            filtered.append(item)
+        scheduled = filtered
     return sorted(live, key=lambda item: item.when) + sorted(
         scheduled, key=lambda item: item.when
     )
+
+
+def dedupe_key_for_departure(departure: Departure) -> str:
+    display_value = canonicalize_display_destination(departure.destination)
+    return normalize_destination_key(display_value)
+
+
+def format_departure_display(departure: Departure, now: datetime) -> str:
+    display_destination = canonicalize_display_destination(departure.destination)
+    if display_destination == departure.destination:
+        return format_departure(departure, now)
+    display_dep = Departure(
+        when=departure.when,
+        destination=display_destination,
+        source=departure.source,
+        line=departure.line,
+        stops=departure.stops,
+        direction=departure.direction,
+    )
+    return format_departure(display_dep, now)
+
+
+def canonicalize_display_destination(value: str) -> str:
+    destination, via = split_destination_via(value)
+    aliases = get_towards_aliases()
+    canonical_map = build_alias_canonical_map(aliases)
+    display_overrides = get_towards_display_overrides()
+    dest_norm = normalize_name(destination)
+    dest_key = canonical_map.get(dest_norm, dest_norm)
+    display_dest = display_overrides.get(dest_key, destination.strip())
+    via_display = ""
+    if via:
+        via_norm = normalize_name(via)
+        via_key = canonical_map.get(via_norm, via_norm)
+        via_display = display_overrides.get(via_key, via.strip())
+    if via_display:
+        return f"{display_dest} via {via_display}"
+    return display_dest
+
+
+def normalize_destination_key(value: str) -> str:
+    destination, via = split_destination_via(value)
+    aliases = get_towards_aliases()
+    canonical_map = build_alias_canonical_map(aliases)
+    dest_norm = normalize_name(destination)
+    dest_norm = normalize_name(
+        re.sub(r"\bpower station\b", "", dest_norm, flags=re.IGNORECASE)
+    )
+    dest_norm = canonical_map.get(dest_norm, dest_norm)
+    if via:
+        via_norm = normalize_name(via)
+        via_norm = canonical_map.get(via_norm, via_norm)
+        return f"{dest_norm} via {via_norm}".strip()
+    return dest_norm
+
+
+def split_destination_via(value: str) -> tuple[str, str]:
+    parts = re.split(r"\s+via\s+", value, flags=re.IGNORECASE, maxsplit=1)
+    if len(parts) == 2:
+        return parts[0].strip(), parts[1].strip()
+    return value.strip(), ""
+
+
+def build_alias_canonical_map(aliases: dict[str, set[str]]) -> dict[str, str]:
+    canonical: dict[str, str] = {}
+    for key, alias_set in aliases.items():
+        canonical[key] = key
+        for alias in alias_set:
+            canonical[alias] = key
+    return canonical
+
+
+def get_towards_aliases() -> dict[str, set[str]]:
+    aliases = {key: set(values) for key, values in BASE_TOWARDS_ALIASES.items()}
+    env_value = os.getenv(TOWARDS_ENV_VAR, "").strip()
+    if not env_value:
+        return aliases
+    for entry in env_value.split(";"):
+        if not entry.strip() or "=" not in entry:
+            continue
+        key_raw, alias_raw = entry.split("=", 1)
+        key = normalize_name(key_raw)
+        if not key:
+            continue
+        alias_set = {
+            normalize_name(item)
+            for item in alias_raw.split(",")
+            if normalize_name(item)
+        }
+        if not alias_set:
+            continue
+        if key not in aliases:
+            aliases[key] = set()
+        aliases[key].update(alias_set)
+    return aliases
+
+
+def get_towards_display_overrides() -> dict[str, str]:
+    return dict(TOWARDS_DISPLAY_OVERRIDES)
 
 
 def filter_arrivals_by_line(

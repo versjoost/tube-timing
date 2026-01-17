@@ -50,9 +50,12 @@ Cross" also matches "CX"). To customize, set
 Output marks LIVE vs SCHEDULED in a consistent format:
 
 ```
-High Barnet via CX, 19 min LIVE
-Battersea Power Station via Charing Cross 19:18 SCHEDULED
+High Barnet via CX 19:12 (in 3m) LIVE
+Battersea Power Station via Charing Cross 19:18 (in 9m) SCHEDULED
 ```
+
+Live entries may use short forms; the CLI expands common ones (for example, "CX" ->
+"Charing Cross") so output stays consistent.
 
 Multi-line stations:
 
