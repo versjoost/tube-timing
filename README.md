@@ -69,7 +69,7 @@ Debug payloads:
 tube-timing now "Totteridge & Whetstone" 60m --debug
 ```
 
-The debug file redacts `app_key`, but treat it as sensitive data.
+The debug file redacts `app_key` and `app_id`, but treat it as sensitive data.
 
 ## Commands
 
