@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+
+# Virtualenv
+.venv/
+venv/
+ENV/
+.env/
+.envrc
+
+# Packaging
+build/
+dist/
+*.egg-info/
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local debug artifacts
+tube-timing-debug.json
+
+# OS
+.DS_Store
