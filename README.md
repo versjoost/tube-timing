@@ -1,110 +1,132 @@
 # tube-timing
 
-A small CLI for expected Tube departures using the TFL Unified API. The API provides
-live arrivals (typically up to ~30 minutes ahead) and longer-range timetables; this
-CLI combines both into a single view.
+A CLI to quickly see the next departures from your Tube station — combining TfL live arrivals with longer-range timetables.
 
-## Setup
+## Quickstart
 
-Set the API key in your shell:
-
-```sh
-export TFL_API_KEY="your_key_here"
-```
-
-Optional: if you have an app id, you can also set `TFL_APP_ID`.
-
-## Install
-
-Recommended (virtualenv):
+- Required: `TFL_API_KEY`
+- Optional: `TFL_APP_ID`
+- Quote station names with spaces (e.g., "Regent's Park")
+- Use your preferred environment (venv/conda/pyenv); commands assume it is active.
 
 ```sh
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -U pip setuptools
-python -m pip install -e .
+export TFL_API_KEY=your_key_here
+# export TFL_APP_ID=your_app_id_here
+
+python3 -m pip install .
+
+tube-timing now "Regent's Park" 10m
 ```
+
+### Requirements
+
+- Python 3.9+
 
 ## Usage
 
 Basic:
 
 ```sh
-tube-timing now "Totteridge & Whetstone" 30m
+tube-timing now "Regent's Park" 30m
 ```
 
-Filters:
+Filter examples:
 
 ```sh
-tube-timing now "Totteridge & Whetstone" 60m --direction southbound
-tube-timing now "Totteridge & Whetstone" 60m --towards "Charing Cross"
+tube-timing now "Regent's Park" 60m --direction southbound
+tube-timing now "Regent's Park" 60m --towards "Charing Cross"
 tube-timing now "Waterloo" 60m --line jubilee --line northern
 ```
 
-When using a cardinal direction (northbound/southbound/etc), select a single line.
-The `--towards` filter matches both final destinations and intermediate stops when
-available from timetables. Common abbreviations are expanded (for example, "Charing
-Cross" also matches "CX"). To customize, set
-`TUBE_TIMING_TOWARDS_ALIASES="charing cross=cx,chx;saint=st"`.
+Station matching:
+- Uses the TfL StopPoint name search (case-insensitive, partial matches allowed).
+- If multiple matches are returned, an exact normalised name wins; otherwise the first match is used.
 
-Output marks LIVE vs SCHEDULED in a consistent format:
+## Window format
+
+- Use segments like `30m`, `1h`, `15m`, `1h30m`.
+- The window is how far into the future (from now) to include departures.
+
+## Filtering
+
+### Filtering behaviour
+
+- `--direction` accepts inbound/outbound or compass directions.
+- Compass directions require a single `--line` so direction can be inferred for that line.
+- `--towards` matches the final destination in live arrivals and intermediate stops in timetables when available.
+
+### Towards aliases
+
+- Common abbreviations are expanded in matching and output.
+- Customise via `TUBE_TIMING_TOWARDS_ALIASES`:
+
+```sh
+export TUBE_TIMING_TOWARDS_ALIASES="charing cross=cx,chx;saint=st"
+```
+
+### Output format
+
+- Every line ends with `LIVE` or `SCHEDULED`.
 
 ```
-High Barnet via CX 19:12 (in 3m) LIVE
+High Barnet via Charing Cross 19:12 (in 3m) LIVE
 Battersea Power Station via Charing Cross 19:18 (in 9m) SCHEDULED
 ```
 
-Live entries may use short forms; the CLI expands common ones (for example, "CX" ->
-"Charing Cross") so output stays consistent.
+## Timetables & performance
 
-Multi-line stations:
+Default behaviour for multi-line stations:
+- Per-line timetable calls are skipped.
+- Live arrivals still show.
+- Station-level timetables (single API call) are used when available.
 
-By default, per-line timetable calls are skipped for stations with more than one line
-to keep response times down. Live arrivals still show, and the station-level timetable
-(single API call) is used when available. Use `--line` to scope the timetables or
-`--full-timetable` to force them. Using `--towards` also enables per-line timetables.
+Overrides:
+- `--line` scopes per-line timetables to those lines.
+- `--full-timetable` forces per-line timetables.
+- `--towards` enables per-line timetables.
+
+Examples:
 
 ```sh
 tube-timing now "Waterloo" 10m --line jubilee --line northern
 tube-timing now "Waterloo" 10m --full-timetable
 ```
 
-Explore options:
+### Known limitations
 
-```sh
-tube-timing list "Totteridge & Whetstone"
-```
-
-Debug payloads:
-
-```sh
-tube-timing now "Totteridge & Whetstone" 60m --debug
-```
-
-The debug file redacts `app_key` and `app_id`, but treat it as sensitive data.
+- Live arrivals can be empty during service disruptions.
+- Timetables may be missing or incomplete for some stations.
 
 ## Commands
 
-- `tube-timing now <station> <window>`
-- `tube-timing list <station>` (shows directions and destinations)
-- `tube-timing env` (shows whether the API key is set)
+- `tube-timing now <station> <window>`: show expected departures.
+- `tube-timing list <station>`: list directions and destinations.
+- `tube-timing env`: show whether `TFL_API_KEY` is set.
 
-## Window format
+## Debugging
 
-Accepts one or more segments like `30m`, `1h`, `15m`, `1h30m`.
+- `--debug` writes JSON payloads to `./tube-timing-debug.json` by default.
+- Provide a path to write elsewhere: `--debug /path/to/file.json`.
+- `app_key` and `app_id` are redacted, but treat output as sensitive.
 
 ## Development
 
-Run without installing:
-
-```sh
-PYTHONPATH=src python3 -m tube_timing.cli now "Totteridge & Whetstone" 30m
-```
-
-If you use the PYTHONPATH method, install dependencies first:
+Dev setup (editable install):
 
 ```sh
 python3 -m pip install -e .
+```
+
+Run locally (entrypoint after install):
+
+```sh
+tube-timing now "Regent's Park" 30m
+```
+
+Optional (no install):
+
+```sh
+PYTHONPATH=src python3 -m tube_timing.cli now "Regent's Park" 30m
 ```
 
 Quick sanity checks:
