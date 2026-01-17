@@ -6,9 +6,7 @@ Requirements: Python 3.9+
 
 ## Quickstart
 
-- Required: `TFL_API_KEY`
-- Optional: `TFL_APP_ID`
-- Quote station names with spaces (e.g., "Regent's Park")
+- Env: TFL_API_KEY required (TFL_APP_ID optional)
 - Get an API key from the TfL API portal: https://api.tfl.gov.uk
 
 ```sh
@@ -113,12 +111,6 @@ Dev setup (editable install):
 
 ```sh
 python3 -m pip install -e .
-```
-
-Run locally (entrypoint after install):
-
-```sh
-tube-timing now "Regent's Park" 30m
 ```
 
 Optional (no install):
