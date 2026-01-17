@@ -1,6 +1,8 @@
 # tube-timing
 
-A small CLI for expected Tube departures using the TFL Unified API.
+A small CLI for expected Tube departures using the TFL Unified API. The API provides
+live arrivals (typically up to ~30 minutes ahead) and longer-range timetables; this
+CLI combines both into a single view.
 
 ## Setup
 
@@ -36,6 +38,21 @@ Filters:
 ```sh
 tube-timing now "Totteridge & Whetstone" 60m --direction southbound
 tube-timing now "Totteridge & Whetstone" 60m --towards "Charing Cross"
+tube-timing now "Waterloo" 60m --line jubilee --line northern
+```
+
+When using a cardinal direction (northbound/southbound/etc), select a single line.
+
+Multi-line stations:
+
+By default, per-line timetable calls are skipped for stations with more than one line
+to keep response times down. Live arrivals still show, and the station-level timetable
+(single API call) is used when available. Use `--line` to scope the timetables or
+`--full-timetable` to force them. Using `--towards` also enables per-line timetables.
+
+```sh
+tube-timing now "Waterloo" 10m --line jubilee --line northern
+tube-timing now "Waterloo" 10m --full-timetable
 ```
 
 Explore options:
@@ -68,6 +85,12 @@ Run without installing:
 
 ```sh
 PYTHONPATH=src python3 -m tube_timing.cli now "Totteridge & Whetstone" 30m
+```
+
+If you use the PYTHONPATH method, install dependencies first:
+
+```sh
+python3 -m pip install -e .
 ```
 
 Quick sanity checks:

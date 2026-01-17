@@ -29,14 +29,59 @@ from .departures import (
 )
 
 
+class FriendlyArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        required_prefix = "the following arguments are required:"
+        if required_prefix in message:
+            missing_raw = message.split(required_prefix, 1)[1].strip()
+            missing = [item.strip() for item in missing_raw.split(",") if item.strip()]
+            self.print_usage(sys.stderr)
+            for arg in missing:
+                if arg == "window":
+                    print(
+                        "error: Missing required argument: window (example: 10m or 1h30m).",
+                        file=sys.stderr,
+                    )
+                elif arg == "station":
+                    print(
+                        "error: Missing required argument: station (example: \"Oxford Circus\").",
+                        file=sys.stderr,
+                    )
+                elif arg == "command":
+                    print(
+                        "error: Missing command (try `now`, `list`, or `env`).",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(f"error: Missing required argument: {arg}.", file=sys.stderr)
+            if "window" in missing or "station" in missing:
+                print(
+                    "Example: tube-timing now \"Totteridge & Whetstone\" 10m",
+                    file=sys.stderr,
+                )
+            self.exit(2)
+        super().error(message)
+
+
 def main(argv: Optional[Iterable[str]] = None) -> int:
-    parser = argparse.ArgumentParser(prog="tube-timing")
+    parser = FriendlyArgumentParser(prog="tube-timing")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     now_parser = subparsers.add_parser("now", help="Show expected departures")
     now_parser.add_argument("station", help="Station name, e.g. Totteridge & Whetstone")
     now_parser.add_argument("window", help="Time window, e.g. 30m or 1h30m")
     now_parser.add_argument("--mode", default="tube", help="TFL mode filter")
+    now_parser.add_argument(
+        "--line",
+        "-l",
+        action="append",
+        help="Filter by line name/id (repeatable or comma-separated)",
+    )
+    now_parser.add_argument(
+        "--full-timetable",
+        action="store_true",
+        help="Allow per-line timetables on stations with many lines (may be slow)",
+    )
     now_parser.add_argument(
         "--direction",
         help="Filter by direction (inbound/outbound or northbound/southbound/etc)",
@@ -57,13 +102,29 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     list_parser.add_argument("station", help="Station name, e.g. Totteridge & Whetstone")
     list_parser.add_argument("--mode", default="tube", help="TFL mode filter")
     list_parser.add_argument(
+        "--line",
+        "-l",
+        action="append",
+        help="Filter by line name/id (repeatable or comma-separated)",
+    )
+    list_parser.add_argument(
+        "--full-timetable",
+        action="store_true",
+        help="Allow per-line timetables on stations with many lines (may be slow)",
+    )
+    list_parser.add_argument(
         "--direction",
         help="Filter destinations by direction (inbound/outbound or northbound)",
     )
 
     subparsers.add_parser("env", help="Check API environment variables")
 
-    args = parser.parse_args(argv)
+    arg_list = sys.argv[1:] if argv is None else list(argv)
+    if not arg_list:
+        parser.print_help()
+        return 0
+
+    args = parser.parse_args(arg_list)
 
     if args.command == "env":
         return cmd_env()
@@ -72,12 +133,16 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             args.station,
             args.window,
             args.mode,
+            args.line,
+            args.full_timetable,
             args.direction,
             args.towards,
             args.debug,
         )
     if args.command == "list":
-        return cmd_list(args.station, args.mode, args.direction)
+        return cmd_list(
+            args.station, args.mode, args.line, args.full_timetable, args.direction
+        )
 
     parser.print_help()
     return 1
@@ -98,6 +163,8 @@ def cmd_now(
     station: str,
     window: str,
     mode: str,
+    lines: Optional[List[str]],
+    full_timetable: bool,
     direction: Optional[str],
     towards: Optional[str],
     debug_path: Optional[str],
@@ -142,7 +209,7 @@ def cmd_now(
 
     stop_id = match.id
     station_name = match.name
-    line_ids: List[str] = []
+    line_details: List[dict[str, str]] = []
 
     try:
         stop_point = get_stop_point(client, stop_id)
@@ -150,7 +217,8 @@ def cmd_now(
         for line in stop_point.get("lines", []) or []:
             line_id = line.get("id")
             if line_id:
-                line_ids.append(line_id)
+                line_name = line.get("name") or line_id
+                line_details.append({"id": line_id, "name": line_name})
         if debug_data is not None:
             debug_data["stop_point"] = stop_point
     except TflApiError:
@@ -163,6 +231,41 @@ def cmd_now(
     except TflApiError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    if not line_details:
+        line_details = collect_line_details(arrivals)
+
+    selected_lines, unknown_lines = resolve_line_filters(lines, line_details)
+    if unknown_lines:
+        available = format_available_lines(line_details)
+        print(
+            f"Unknown line(s): {', '.join(unknown_lines)}.",
+            file=sys.stderr,
+        )
+        if available:
+            print(f"Available lines: {', '.join(available)}", file=sys.stderr)
+        return 2
+
+    allow_line_timetables = should_fetch_line_timetables(
+        selected_lines, line_details, full_timetable, bool(towards)
+    )
+    if not allow_line_timetables:
+        print(
+            f"Warning: {station_name} has {len(line_details)} lines; "
+            "skipping per-line timetables. Use --line or --full-timetable.",
+            file=sys.stderr,
+        )
+    elif (
+        towards
+        and not selected_lines
+        and not full_timetable
+        and len(line_details) > 1
+    ):
+        print(
+            "Note: --towards enabled per-line timetables for this multi-line station. "
+            "Use --line to limit requests.",
+            file=sys.stderr,
+        )
+
     normalized_direction = normalize_direction(direction)
     if direction and normalized_direction is None:
         print(
@@ -170,14 +273,34 @@ def cmd_now(
             file=sys.stderr,
         )
         return 2
-    filtered_arrivals = filter_arrivals_by_direction(arrivals, normalized_direction)
+    if (
+        normalized_direction
+        and normalized_direction not in {"inbound", "outbound"}
+        and selected_lines
+        and len(selected_lines) > 1
+    ):
+        print(
+            "Cardinal directions require a single line; "
+            "use inbound/outbound or select one line.",
+            file=sys.stderr,
+        )
+        return 2
+    filtered_arrivals = filter_arrivals_by_line(arrivals, selected_lines)
+    filtered_arrivals = filter_arrivals_by_direction(
+        filtered_arrivals, normalized_direction
+    )
     live_departures = arrivals_to_departures(
         filtered_arrivals, now, window_end, tzinfo
     )
 
     timetable_departures = []
     timetable_errors: List[str] = []
-    timetable_direction = infer_timetable_direction(arrivals, normalized_direction)
+    arrivals_for_direction = (
+        filtered_arrivals if selected_lines else (filtered_arrivals or arrivals)
+    )
+    timetable_direction = infer_timetable_direction(
+        arrivals_for_direction, normalized_direction
+    )
     if (
         normalized_direction
         and normalized_direction not in {"inbound", "outbound"}
@@ -188,17 +311,25 @@ def cmd_now(
             file=sys.stderr,
         )
         return 2
-    try:
-        timetable_data = get_stop_point_timetable(client, stop_id, timetable_direction)
-        if debug_data is not None:
-            debug_data["stop_point_timetable"] = timetable_data
-        timetable_departures = timetable_to_departures(
-            timetable_data, stop_id, now, window_end, tzinfo
-        )
-    except TflApiError as exc:
-        timetable_errors.append(str(exc))
+    if not selected_lines:
+        try:
+            timetable_data = get_stop_point_timetable(
+                client, stop_id, timetable_direction
+            )
+            if debug_data is not None:
+                debug_data["stop_point_timetable"] = timetable_data
+            timetable_departures = timetable_to_departures(
+                timetable_data, stop_id, now, window_end, tzinfo
+            )
+        except TflApiError as exc:
+            timetable_errors.append(str(exc))
 
-    if not timetable_departures:
+    if not timetable_departures and allow_line_timetables:
+        line_ids = [item["id"] for item in line_details]
+        if selected_lines:
+            line_ids = [line_id for line_id in line_ids if line_id in selected_lines]
+            if not line_ids:
+                line_ids = sorted(selected_lines)
         timetable_directions = (
             [timetable_direction]
             if timetable_direction
@@ -231,7 +362,7 @@ def cmd_now(
     if debug_data is not None:
         debug_data["timetable_errors"] = timetable_errors
         debug_data["combined_count"] = len(combined)
-        redacted = redact_debug_data(debug_data, client.api_key)
+        redacted = redact_debug_data(debug_data, client.api_key, client.app_id)
         Path(debug_path).write_text(json.dumps(redacted, indent=2))
 
     direction_label = f", direction: {normalized_direction}" if normalized_direction else ""
@@ -244,7 +375,13 @@ def cmd_now(
     return 0
 
 
-def cmd_list(station: str, mode: str, direction: Optional[str]) -> int:
+def cmd_list(
+    station: str,
+    mode: str,
+    lines: Optional[List[str]],
+    full_timetable: bool,
+    direction: Optional[str],
+) -> int:
     try:
         client = TflClient.from_env()
     except TflApiError as exc:
@@ -266,14 +403,15 @@ def cmd_list(station: str, mode: str, direction: Optional[str]) -> int:
 
     stop_id = match.id
     station_name = match.name
-    line_ids: List[str] = []
+    line_details: List[dict[str, str]] = []
     try:
         stop_point = get_stop_point(client, stop_id)
         station_name = stop_point.get("commonName") or station_name
         for line in stop_point.get("lines", []) or []:
             line_id = line.get("id")
             if line_id:
-                line_ids.append(line_id)
+                line_name = line.get("name") or line_id
+                line_details.append({"id": line_id, "name": line_name})
     except TflApiError:
         pass
 
@@ -283,6 +421,32 @@ def cmd_list(station: str, mode: str, direction: Optional[str]) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
+    if not line_details:
+        line_details = collect_line_details(arrivals)
+
+    selected_lines, unknown_lines = resolve_line_filters(lines, line_details)
+    if unknown_lines:
+        available = format_available_lines(line_details)
+        print(
+            f"Unknown line(s): {', '.join(unknown_lines)}.",
+            file=sys.stderr,
+        )
+        if available:
+            print(f"Available lines: {', '.join(available)}", file=sys.stderr)
+        return 2
+
+    allow_line_timetables = should_fetch_line_timetables(
+        selected_lines, line_details, full_timetable, False
+    )
+    skipped_line_timetables = False
+    if not allow_line_timetables:
+        skipped_line_timetables = True
+        print(
+            f"Warning: {station_name} has {len(line_details)} lines; "
+            "skipping per-line timetables. Use --line or --full-timetable.",
+            file=sys.stderr,
+        )
+
     normalized_direction = normalize_direction(direction)
     if direction and normalized_direction is None:
         print(
@@ -290,18 +454,38 @@ def cmd_list(station: str, mode: str, direction: Optional[str]) -> int:
             file=sys.stderr,
         )
         return 2
+    if (
+        normalized_direction
+        and normalized_direction not in {"inbound", "outbound"}
+        and selected_lines
+        and len(selected_lines) > 1
+    ):
+        print(
+            "Cardinal directions require a single line; "
+            "use inbound/outbound or select one line.",
+            file=sys.stderr,
+        )
+        return 2
 
     print(f"Available options for {station_name}:")
-    _print_directions(arrivals)
+    arrivals_for_display = filter_arrivals_by_line(arrivals, selected_lines)
+    _print_directions(arrivals_for_display)
 
-    filtered_arrivals = filter_arrivals_by_direction(arrivals, normalized_direction)
+    filtered_arrivals = filter_arrivals_by_direction(
+        arrivals_for_display, normalized_direction
+    )
     live_destinations = extract_live_destinations(filtered_arrivals)
     if live_destinations:
         print("Live destinations:")
         for dest in live_destinations:
             print(dest)
 
-    timetable_direction = infer_timetable_direction(arrivals, normalized_direction)
+    arrivals_for_direction = (
+        arrivals_for_display if selected_lines else (arrivals_for_display or arrivals)
+    )
+    timetable_direction = infer_timetable_direction(
+        arrivals_for_direction, normalized_direction
+    )
     if (
         normalized_direction
         and normalized_direction not in {"inbound", "outbound"}
@@ -318,23 +502,164 @@ def cmd_list(station: str, mode: str, direction: Optional[str]) -> int:
         else ["inbound", "outbound"]
     )
     timetable_dest_set: set[str] = set()
-    for line_id in line_ids:
-        for direction_value in timetable_directions:
-            try:
-                timetable_data = get_line_timetable(
-                    client, line_id, stop_id, direction_value
-                )
-            except TflApiError:
-                continue
-            timetable_dest_set.update(timetable_destinations(timetable_data))
+    if allow_line_timetables:
+        line_ids = [item["id"] for item in line_details]
+        if selected_lines:
+            line_ids = [line_id for line_id in line_ids if line_id in selected_lines]
+            if not line_ids:
+                line_ids = sorted(selected_lines)
+        for line_id in line_ids:
+            for direction_value in timetable_directions:
+                try:
+                    timetable_data = get_line_timetable(
+                        client, line_id, stop_id, direction_value
+                    )
+                except TflApiError:
+                    continue
+                timetable_dest_set.update(timetable_destinations(timetable_data))
     if timetable_dest_set:
         print("Timetable destinations:")
         for dest in sorted(timetable_dest_set):
             print(compact_destination(dest))
 
     if not live_destinations and not timetable_dest_set:
-        print("No destinations available right now.")
+        if skipped_line_timetables:
+            print(
+                "No live destinations right now. "
+                "Timetable destinations skipped; use --line or --full-timetable."
+            )
+        else:
+            print("No destinations available right now.")
     return 0
+
+
+LINE_TIMETABLE_LINE_THRESHOLD = 2
+
+LINE_ALIASES = {
+    "bakerloo": "bakerloo",
+    "central": "central",
+    "circle": "circle",
+    "district": "district",
+    "dlr": "dlr",
+    "elizabeth": "elizabeth",
+    "elizabethline": "elizabeth",
+    "hammersmithandcity": "hammersmith-city",
+    "hammersmithcity": "hammersmith-city",
+    "hmc": "hammersmith-city",
+    "jub": "jubilee",
+    "jubilee": "jubilee",
+    "met": "metropolitan",
+    "metropolitan": "metropolitan",
+    "northern": "northern",
+    "overground": "london-overground",
+    "picc": "piccadilly",
+    "piccadilly": "piccadilly",
+    "victoria": "victoria",
+    "waterlooandcity": "waterloo-city",
+    "waterloocity": "waterloo-city",
+    "wac": "waterloo-city",
+}
+
+
+def normalize_line_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.strip().lower())
+
+
+def should_fetch_line_timetables(
+    selected_lines: Optional[set[str]],
+    line_details: List[dict[str, str]],
+    full_timetable: bool,
+    allow_if_towards: bool,
+) -> bool:
+    if selected_lines:
+        return True
+    if full_timetable:
+        return True
+    if allow_if_towards:
+        return True
+    return len(line_details) < LINE_TIMETABLE_LINE_THRESHOLD
+
+
+def guess_line_id(value: str) -> Optional[str]:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+    return slug or None
+
+
+def collect_line_details(arrivals: List[dict[str, Any]]) -> List[dict[str, str]]:
+    seen: set[str] = set()
+    details: List[dict[str, str]] = []
+    for item in arrivals:
+        line_id = item.get("lineId")
+        if not line_id or line_id in seen:
+            continue
+        line_name = item.get("lineName") or line_id
+        details.append({"id": line_id, "name": line_name})
+        seen.add(line_id)
+    return details
+
+
+def format_available_lines(line_details: List[dict[str, str]]) -> List[str]:
+    formatted: List[str] = []
+    seen: set[str] = set()
+    for line in line_details:
+        line_id = line.get("id")
+        if not line_id or line_id in seen:
+            continue
+        name = line.get("name") or line_id
+        if normalize_line_token(name) != normalize_line_token(line_id):
+            formatted.append(f"{name} ({line_id})")
+        else:
+            formatted.append(name)
+        seen.add(line_id)
+    return formatted
+
+
+def resolve_line_filters(
+    requested: Optional[List[str]],
+    available_lines: List[dict[str, str]],
+) -> tuple[Optional[set[str]], List[str]]:
+    if not requested:
+        return None, []
+    tokens: List[str] = []
+    for value in requested:
+        for part in value.split(","):
+            text = part.strip()
+            if text:
+                tokens.append(text)
+    if not tokens:
+        return None, []
+    lookup: dict[str, str] = {}
+    available_ids: set[str] = set()
+    for line in available_lines:
+        line_id = line.get("id")
+        if not line_id:
+            continue
+        available_ids.add(line_id)
+        lookup[normalize_line_token(line_id)] = line_id
+        name = line.get("name")
+        if name:
+            lookup[normalize_line_token(name)] = line_id
+    resolved: set[str] = set()
+    unknown: List[str] = []
+    for token in tokens:
+        norm = normalize_line_token(token)
+        if not norm:
+            continue
+        line_id = lookup.get(norm)
+        if line_id is None:
+            line_id = LINE_ALIASES.get(norm)
+        if line_id is None and not available_ids:
+            line_id = guess_line_id(token)
+        if line_id is None:
+            unknown.append(token)
+            continue
+        if available_ids and line_id not in available_ids:
+            unknown.append(token)
+            continue
+        resolved.add(line_id)
+    if not resolved and not unknown:
+        return None, []
+    return resolved, unknown
 
 
 def normalize_direction(value: Optional[str]) -> Optional[str]:
@@ -357,6 +682,25 @@ def normalize_direction(value: Optional[str]) -> Optional[str]:
     if text in {"inbound", "outbound", "northbound", "southbound", "eastbound", "westbound"}:
         return text
     return None
+
+
+def filter_arrivals_by_line(
+    arrivals: List[dict[str, Any]], line_ids: Optional[set[str]]
+) -> List[dict[str, Any]]:
+    if not line_ids:
+        return arrivals
+    allowed = set(line_ids)
+    allowed_tokens = {normalize_line_token(line_id) for line_id in allowed}
+    filtered = []
+    for item in arrivals:
+        line_id = item.get("lineId")
+        if line_id in allowed:
+            filtered.append(item)
+            continue
+        line_name = item.get("lineName") or ""
+        if normalize_line_token(line_name) in allowed_tokens:
+            filtered.append(item)
+    return filtered
 
 
 def filter_arrivals_by_direction(
@@ -440,16 +784,21 @@ def _print_directions(arrivals: List[dict[str, Any]]) -> None:
         print(direction)
 
 
-def redact_debug_data(value: Any, api_key: str) -> Any:
+def redact_debug_data(value: Any, api_key: str, app_id: Optional[str]) -> Any:
     if isinstance(value, dict):
-        return {key: redact_debug_data(val, api_key) for key, val in value.items()}
+        return {
+            key: redact_debug_data(val, api_key, app_id) for key, val in value.items()
+        }
     if isinstance(value, list):
-        return [redact_debug_data(item, api_key) for item in value]
+        return [redact_debug_data(item, api_key, app_id) for item in value]
     if isinstance(value, str):
         redacted = value
         if api_key:
             redacted = redacted.replace(api_key, "REDACTED")
+        if app_id:
+            redacted = redacted.replace(app_id, "REDACTED")
         redacted = re.sub(r"(app_key=)([^&\s]+)", r"\1REDACTED", redacted)
+        redacted = re.sub(r"(app_id=)([^&\s]+)", r"\1REDACTED", redacted)
         return redacted
     return value
 
