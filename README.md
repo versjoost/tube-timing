@@ -12,14 +12,6 @@ Requirements: Python 3.9+
 Install with `pipx` (recommended, when published on PyPI):
 
 ```sh
-brew install pipx
-pipx ensurepath
-pipx install tube-timing
-```
-
-If this repo is not published to PyPI yet, install from source:
-
-```sh
 # from a local clone
 pipx install .
 
@@ -152,15 +144,6 @@ Quick sanity checks:
 
 ```sh
 python3 -m py_compile src/tube_timing/*.py
-```
-
-## Publishing
-
-- PyPI release checklist: `RELEASE.md`
-- After publishing, users can install with:
-
-```sh
-pipx install tube-timing
 ```
 
 ## License
