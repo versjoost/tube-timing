@@ -1,8 +1,11 @@
 import io
 import os
+import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from tube_timing import cli
 
 
@@ -12,7 +15,10 @@ def _run_silenced(callable_obj, *args, **kwargs) -> int:
         return callable_obj(*args, **kwargs)
 
 
-@unittest.skipUnless(os.getenv("TFL_API_KEY"), "TFL_API_KEY not set")
+@unittest.skipUnless(
+    os.getenv("TFL_API_KEY") and os.getenv("TUBE_TIMING_RUN_INTEGRATION") == "1",
+    "Integration tests require TFL_API_KEY and TUBE_TIMING_RUN_INTEGRATION=1",
+)
 class TubeTimingIntegrationTests(unittest.TestCase):
     def test_now_with_line_filters(self) -> None:
         cases = [

@@ -85,16 +85,23 @@ def parse_time_of_day(value: str, today: date, tzinfo: timezone) -> Optional[dat
     text = value.strip()
     if not text:
         return None
-    if re.fullmatch(r"\d{3,4}", text):
-        hours = int(text[:-2])
-        minutes = int(text[-2:])
-        return _combine_hour_minute(hours, minutes, today, tzinfo)
-    if ":" in text:
-        parts = text.split(":")
-        if len(parts) >= 2:
-            hours = int(parts[0])
-            minutes = int(parts[1])
-            return _combine_hour_minute(hours, minutes, today, tzinfo)
+    try:
+        if re.fullmatch(r"\d{3,4}", text):
+            hours = int(text[:-2])
+            minutes = int(text[-2:])
+            if 0 <= minutes < 60:
+                return _combine_hour_minute(hours, minutes, today, tzinfo)
+            return None
+        if ":" in text:
+            parts = text.split(":")
+            if len(parts) >= 2:
+                hours = int(parts[0])
+                minutes = int(parts[1])
+                if 0 <= minutes < 60:
+                    return _combine_hour_minute(hours, minutes, today, tzinfo)
+                return None
+    except ValueError:
+        return None
     return None
 
 
@@ -111,8 +118,8 @@ def parse_time_value(value: Any, today: date, tzinfo: timezone) -> Optional[date
 
 def normalize_name(value: str) -> str:
     text = re.sub(r"[^a-z0-9]+", " ", value.lower())
-    text = text.replace(" underground station ", " ")
-    text = text.replace(" station ", " ")
+    text = re.sub(r"\bunderground station\b", " ", text)
+    text = re.sub(r"\bstation\b", " ", text)
     return " ".join(text.split())
 
 

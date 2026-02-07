@@ -65,10 +65,33 @@ class FriendlyArgumentParser(argparse.ArgumentParser):
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
-    parser = FriendlyArgumentParser(prog="tube-timing")
+    parser = FriendlyArgumentParser(
+        prog="tube-timing",
+        description="Check upcoming TfL departures for a station.",
+        epilog=(
+            "Examples:\n"
+            "  tube-timing env\n"
+            "  tube-timing now \"Regent's Park\" 10m\n"
+            "  tube-timing now \"Waterloo\" 30m --line jubilee --direction southbound\n"
+            "  tube-timing list \"Oxford Circus\" --line victoria"
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    now_parser = subparsers.add_parser("now", help="Show expected departures")
+    now_parser = subparsers.add_parser(
+        "now",
+        help="Show expected departures",
+        description="Show live and scheduled departures in a future window.",
+        epilog=(
+            "Examples:\n"
+            "  tube-timing now \"Regent's Park\" 30m\n"
+            "  tube-timing now \"Regent's Park\" 60m --direction southbound\n"
+            "  tube-timing now \"Waterloo\" 60m --line jubilee --line northern\n"
+            "  tube-timing now \"Bank\" 20m --towards \"Charing Cross\""
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
     now_parser.add_argument("station", help="Station name, e.g. Totteridge & Whetstone")
     now_parser.add_argument("window", help="Time window, e.g. 30m or 1h30m")
     now_parser.add_argument("--mode", default="tube", help="TFL mode filter")
@@ -98,7 +121,16 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     )
 
     list_parser = subparsers.add_parser(
-        "list", help="List available directions and destinations"
+        "list",
+        help="List available directions and destinations",
+        description="List available directions and destinations for a station.",
+        epilog=(
+            "Examples:\n"
+            "  tube-timing list \"Oxford Circus\"\n"
+            "  tube-timing list \"Oxford Circus\" --line victoria\n"
+            "  tube-timing list \"Waterloo\" --direction southbound"
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
     )
     list_parser.add_argument("station", help="Station name, e.g. Totteridge & Whetstone")
     list_parser.add_argument("--mode", default="tube", help="TFL mode filter")
@@ -149,6 +181,34 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     return 1
 
 
+def _station_initials(name: str) -> str:
+    words = normalize_name(name).split()
+    if len(words) < 2:
+        return ""
+    return "".join(word[0] for word in words if word)
+
+
+def choose_station_match(
+    station_query: str, matches: List[Any]
+) -> tuple[Any, bool]:
+    station_norm = normalize_name(station_query)
+    for candidate in matches:
+        if normalize_name(candidate.name) == station_norm:
+            return candidate, False
+
+    query_token = re.sub(r"[^a-z0-9]+", "", station_query.strip().lower())
+    if query_token:
+        acronym_matches = [
+            candidate
+            for candidate in matches
+            if _station_initials(candidate.name) == query_token
+        ]
+        if acronym_matches:
+            return acronym_matches[0], True
+
+    return matches[0], True
+
+
 def cmd_env() -> int:
     api_key = os.getenv("TFL_API_KEY", "").strip()
     if api_key:
@@ -192,21 +252,28 @@ def cmd_now(
             file=sys.stderr,
         )
 
-    matches = search_stop_points(client, station, modes=[mode])
+    station_query = resolve_station_query(station)
+    if station_query != station:
+        print(
+            f"Note: interpreting station '{station}' as '{station_query}'.",
+            file=sys.stderr,
+        )
+    try:
+        matches = search_stop_points(client, station_query, modes=[mode])
+    except TflApiError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     if not matches:
         print(f"No station matches for '{station}'.", file=sys.stderr)
         return 2
     if debug_data is not None:
         debug_data["matches"] = [match.__dict__ for match in matches]
-
-    station_norm = normalize_name(station)
-    match = None
-    for candidate in matches:
-        if normalize_name(candidate.name) == station_norm:
-            match = candidate
-            break
-    if match is None:
-        match = matches[0]
+    match, matched_by_fallback = choose_station_match(station_query, matches)
+    if matched_by_fallback:
+        print(
+            f"Note: using station match '{match.name}' for query '{station_query}'.",
+            file=sys.stderr,
+        )
 
     stop_id = match.id
     station_name = match.name
@@ -355,6 +422,7 @@ def cmd_now(
                 )
 
     combined = merge_departures(live_departures, timetable_departures)
+    combined_before_towards = len(combined)
     if towards:
         needles = build_towards_needles(towards)
         via_sensitive = is_via_direction_sensitive(towards)
@@ -365,6 +433,17 @@ def cmd_now(
                 item, needles, normalized_direction, via_sensitive
             )
         ]
+        if combined_before_towards and not combined:
+            sample = sorted(
+                {canonicalize_display_destination(item.destination) for item in live_departures}
+            )
+            if sample:
+                preview = ", ".join(sample[:5])
+                print(
+                    f"Note: --towards '{towards}' filtered out all departures. "
+                    f"Live destinations include: {preview}",
+                    file=sys.stderr,
+                )
     combined = order_departures(combined)
     if debug_data is not None:
         debug_data["timetable_errors"] = timetable_errors
@@ -395,18 +474,26 @@ def cmd_list(
         print(str(exc), file=sys.stderr)
         return 2
 
-    matches = search_stop_points(client, station, modes=[mode])
+    station_query = resolve_station_query(station)
+    if station_query != station:
+        print(
+            f"Note: interpreting station '{station}' as '{station_query}'.",
+            file=sys.stderr,
+        )
+    try:
+        matches = search_stop_points(client, station_query, modes=[mode])
+    except TflApiError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     if not matches:
         print(f"No station matches for '{station}'.", file=sys.stderr)
         return 2
-    station_norm = normalize_name(station)
-    match = None
-    for candidate in matches:
-        if normalize_name(candidate.name) == station_norm:
-            match = candidate
-            break
-    if match is None:
-        match = matches[0]
+    match, matched_by_fallback = choose_station_match(station_query, matches)
+    if matched_by_fallback:
+        print(
+            f"Note: using station match '{match.name}' for query '{station_query}'.",
+            file=sys.stderr,
+        )
 
     stop_id = match.id
     station_name = match.name
@@ -542,6 +629,10 @@ def cmd_list(
 
 LINE_TIMETABLE_LINE_THRESHOLD = 2
 
+STATION_QUERY_ALIASES = {
+    "tcr": "Tottenham Court Road",
+}
+
 LINE_ALIASES = {
     "bakerloo": "bakerloo",
     "central": "central",
@@ -570,6 +661,15 @@ LINE_ALIASES = {
 
 def normalize_line_token(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.strip().lower())
+
+
+def normalize_station_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.strip().lower())
+
+
+def resolve_station_query(value: str) -> str:
+    token = normalize_station_token(value)
+    return STATION_QUERY_ALIASES.get(token, value)
 
 
 def should_fetch_line_timetables(
@@ -718,10 +818,23 @@ def build_towards_needles(value: str) -> set[str]:
     alt = normalize_name(text)
     if alt:
         needles.add(alt)
-    for needle in list(needles):
-        for key, alias_set in aliases.items():
-            if key in needle:
-                needles.update(alias_set)
+    canonical_map = build_alias_canonical_map(aliases)
+    queue = list(needles)
+    while queue:
+        needle = queue.pop()
+        canonical = canonical_map.get(needle)
+        if canonical and canonical not in needles:
+            needles.add(canonical)
+            queue.append(canonical)
+        alias_set = aliases.get(needle, set()) or aliases.get(canonical or "", set())
+        for alias in alias_set:
+            if alias not in needles:
+                needles.add(alias)
+                queue.append(alias)
+        for key, alias_values in aliases.items():
+            if needle in alias_values and key not in needles:
+                needles.add(key)
+                queue.append(key)
     return needles
 
 

@@ -9,6 +9,33 @@ Requirements: Python 3.9+
 - TfL API key required (API ID optional)
 - Get an API key from the TfL API portal: https://api.tfl.gov.uk
 
+Install with `pipx` (recommended, when published on PyPI):
+
+```sh
+brew install pipx
+pipx ensurepath
+pipx install tube-timing
+```
+
+If this repo is not published to PyPI yet, install from source:
+
+```sh
+# from a local clone
+pipx install .
+
+# or directly from GitHub
+pipx install "git+https://github.com/<owner>/<repo>.git"
+```
+
+Then run:
+
+```sh
+tube-timing env
+tube-timing now "Regent's Park" 10m
+```
+
+Alternative (without pipx):
+
 ```sh
 export TFL_API_KEY=your_key_here
 # export TFL_APP_ID=your_app_id_here
@@ -36,7 +63,9 @@ tube-timing now "Waterloo" 60m --line jubilee --line northern
 
 Station matching:
 - Uses the TfL StopPoint name search (case-insensitive, partial matches allowed).
-- If multiple matches are returned, an exact normalised name wins; otherwise the first match is used.
+- If multiple matches are returned, an exact normalised name wins.
+- Common shortcuts are supported (for example, `TCR` -> `Tottenham Court Road`).
+- If no exact/shortcut match is found, the first TfL result is used and a note is printed.
 
 ## Window format
 
@@ -123,6 +152,15 @@ Quick sanity checks:
 
 ```sh
 python3 -m py_compile src/tube_timing/*.py
+```
+
+## Publishing
+
+- PyPI release checklist: `RELEASE.md`
+- After publishing, users can install with:
+
+```sh
+pipx install tube-timing
 ```
 
 ## License

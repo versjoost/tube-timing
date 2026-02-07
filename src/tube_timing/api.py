@@ -39,13 +39,21 @@ class TflClient:
         merged.setdefault("app_key", self.api_key)
         if self.app_id:
             merged.setdefault("app_id", self.app_id)
-        response = self.session.get(url, params=merged, timeout=15)
+        try:
+            response = self.session.get(url, params=merged, timeout=15)
+        except requests.RequestException as exc:
+            raise TflApiError(f"TFL API request failed for {path}: {exc}") from exc
         if response.status_code >= 400:
             message = response.text.strip()
             raise TflApiError(
                 f"TFL API error {response.status_code} for {path}: {message}"
             )
-        return response.json()
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise TflApiError(
+                f"TFL API returned invalid JSON for {path} (status {response.status_code})"
+            ) from exc
 
 
 def search_stop_points(
